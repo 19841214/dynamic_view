@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>半導體製程模擬實驗室</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: #1a1a1a;
+            color: white;
+            overflow: hidden;
+        }
+        canvas {
+            background-color: #2d2d2d;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .step-btn {
+            transition: all 0.3s ease;
+        }
+        .step-btn.active {
+            background-color: #00e5ff;
+            color: black;
+            font-weight: bold;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.5);
+        }
+        .action-btn {
+            background: linear-gradient(135deg, #00e5ff 0%, #00ff9d 100%);
+            color: #000;
+            font-weight: bold;
+            transition: transform 0.1s;
+        }
+        .action-btn:active {
+            transform: scale(0.95);
+        }
+        .action-btn:disabled {
+            background: #555;
+            color: #888;
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen items-center justify-center p-4">
+
+    <!-- Header -->
+    <div class="w-full max-w-4xl flex justify-between items-center mb-6">
+        <div>
+            <h1 class="text-3xl font-bold text-cyan-400">半導體製程模擬實驗室</h1>
+            <p class="text-gray-400 text-sm mt-1">互動式學習：從沙子到晶片的關鍵旅程</p>
+        </div>
+        <div class="flex gap-2">
+            <button id="nav-step-1" class="step-btn px-4 py-2 rounded-full border border-gray-600 text-sm" onclick="app.setStep(1)">1. 拉晶 (Pulling)</button>
+            <button id="nav-step-2" class="step-btn px-4 py-2 rounded-full border border-gray-600 text-sm" onclick="app.setStep(2)">2. 曝光 (Lithography)</button>
+            <button id="nav-step-3" class="step-btn px-4 py-2 rounded-full border border-gray-600 text-sm" onclick="app.setStep(3)">3. 蝕刻 (Etching)</button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="flex flex-col md:flex-row gap-6 w-full max-w-5xl h-[600px]">
+        
+        <!-- Canvas Area -->
+        <div class="relative flex-1 bg-gray-800 rounded-2xl p-1 flex items-center justify-center">
+            <canvas id="simCanvas" width="600" height="500"></canvas>
+            
+            <!-- Labels Overlay (Dynamic) -->
+            <div id="labels-container" class="absolute inset-0 pointer-events-none">
+                <!-- Labels will be injected by JS -->
+            </div>
+        </div>
+
+        <!-- Controls & Info -->
+        <div class="w-full md:w-80 bg-gray-800 rounded-2xl p-6 flex flex-col justify-between border border-gray-700">
+            
+            <div>
+                <div class="mb-4">
+                    <span id="step-badge" class="bg-yellow-500 text-black text-xs font-bold px-2 py-1 rounded uppercase">Step 1</span>
+                    <h2 id="step-title" class="text-2xl font-bold mt-2">柴可拉斯基拉晶法</h2>
+                </div>
+                
+                <div class="bg-gray-900 rounded-lg p-4 text-gray-300 text-sm leading-relaxed border-l-4 border-cyan-400 mb-6">
+                    <p id="step-desc">
+                        這裡是晶圓的誕生地。我們將一小顆「晶種」放入 1400°C 的熔融矽湯中，旋轉並緩慢拉起，矽原子就會整齊排列，長成一根巨大的單晶矽棒。
+                    </p>
+                </div>
+
+                <div id="status-box" class="hidden bg-gray-700/50 p-3 rounded mb-4 text-cyan-300 text-sm font-mono">
+                    > 等待指令...
+                </div>
+            </div>
+
+            <div class="flex flex-col gap-3">
+                <button id="action-btn" class="action-btn w-full py-4 rounded-xl text-lg shadow-lg" onclick="app.triggerAction()">
+                    開始拉晶
+                </button>
+                <button class="text-gray-500 text-sm hover:text-white transition-colors" onclick="app.resetCurrentStep()">
+                    <i class="fa-solid fa-rotate-right"></i> 重置本步驟
+                </button>
+            </div>
+        </div>
+    </div>
+
+<script>
+/**
+ * Semiconductor Simulation Logic
+ */
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+
+// Game State
+const app = {
+    step: 1,
+    animating: false,
+    progress: 0, // 0 to 100
+    animationId: null,
+    
+    // Step 1 State
+    crystalHeight: 0,
+    crystalWidth: 0,
+    rotation: 0,
+
+    // Step 2 State
+    lightOn: false,
+    resistExposed: false,
+
+    // Step 3 State
+    etchPhase: 0, // 0: Idle, 1: Developing, 2: Etching, 3: Stripping, 4: Done
+    trenchDepth: 0,
+    
+    init: function() {
+        this.setStep(1);
+        this.loop();
+    },
+
+    setStep: function(stepId) {
+        this.step = stepId;
+        this.resetCurrentStep();
+        this.updateUI();
+    },
+
+    resetCurrentStep: function() {
+        this.animating = false;
+        this.progress = 0;
+        cancelAnimationFrame(this.animationId);
+        
+        // Reset specific states
+        if (this.step === 1) {
+            this.crystalHeight = 10;
+            this.crystalWidth = 20;
+            this.rotation = 0;
+        } else if (this.step === 2) {
+            this.lightOn = false;
+            this.resistExposed = false;
+        } else if (this.step === 3) {
+            this.etchPhase = 0;
+            this.trenchDepth = 0;
+        }
+        
+        this.draw();
+        this.updateStatus("> 準備就緒");
+    },
+
+    updateUI: function() {
+        // Highlight Nav
+        document.querySelectorAll('.step-btn').forEach((btn, idx) => {
+            if (idx + 1 === this.step) btn.classList.add('active');
+            else btn.classList.remove('active');
+        });
+
+        // Update Text
+        const badge = document.getElementById('step-badge');
+        const title = document.getElementById('step-title');
+        const desc = document.getElementById('step-desc');
+        const btn = document.getElementById('action-btn');
+
+        if (this.step === 1) {
+            badge.innerText = "Step 1: Crystal Pulling";
+            title.innerText = "拉晶製程 (Ingot)";
+            desc.innerHTML = "參訪時看到的矽晶圓就是這樣來的。<br>重點：<strong>旋轉、拉升、溫度控制</strong>。<br>這決定了晶圓的純度與尺寸（8吋或12吋）。";
+            btn.innerText = "啟動拉晶爐";
+            btn.disabled = false;
+        } else if (this.step === 2) {
+            badge.innerText = "Step 2: Photolithography";
+            title.innerText = "黃光微影 (Exposure)";
+            desc.innerHTML = "最貴的 ASML 機台登場！<br>光罩擋住不要曝光的地方，紫外線 (UV) 照射光阻劑。<br>這就像是在晶圓上「印」圖案。";
+            btn.innerText = "開啟曝光光源";
+            btn.disabled = false;
+        } else if (this.step === 3) {
+            badge.innerText = "Step 3: Etching";
+            title.innerText = "蝕刻製程 (Etch)";
+            desc.innerHTML = "把圖案真正刻進矽晶圓裡。<br>1. 顯影：洗掉曝光的光阻。<br>2. 蝕刻：用電漿/酸液吃掉沒保護的矽。<br>3. 去光阻：洗乾淨，完成！";
+            btn.innerText = "注入蝕刻氣體";
+            btn.disabled = false;
+        }
+    },
+
+    updateStatus: function(text) {
+        const box = document.getElementById('status-box');
+        box.classList.remove('hidden');
+        box.innerText = text;
+    },
+
+    triggerAction: function() {
+        if (this.animating) return;
+        this.animating = true;
+        document.getElementById('action-btn').disabled = true;
+        
+        if (this.step === 1) {
+            this.updateStatus("> 加熱中... 晶種接觸液面");
+        } else if (this.step === 2) {
+            this.updateStatus("> 曝光快門開啟... UV 照射中");
+            this.lightOn = true;
+        } else if (this.step === 3) {
+            this.updateStatus("> 顯影液注入... 清除曝光光阻");
+            this.etchPhase = 1; // Start developing
+        }
+        
+        this.loop();
+    },
+
+    loop: function() {
+        if (!this.animating) {
+            this.draw();
+            return; // Stop loop if not animating
+        }
+
+        this.update();
+        this.draw();
+
+        if (this.animating) {
+            this.animationId = requestAnimationFrame(() => this.loop());
+        }
+    },
+
+    update: function() {
+        if (this.step === 1) {
+            // Crystal Growing Logic
+            if (this.progress < 100) {
+                this.progress += 0.5;
+                this.crystalHeight += 1.5;
+                if (this.crystalWidth < 120) this.crystalWidth += 0.5;
+                this.rotation += 0.1;
+            } else {
+                this.animating = false;
+                this.updateStatus("> 拉晶完成！獲得單晶矽棒");
+                document.getElementById('action-btn').innerText = "完成 (請按下一步)";
+            }
+        } else if (this.step === 2) {
+            // Exposure Logic
+            if (this.progress < 100) {
+                this.progress += 1;
+                // Flicker effect for light
+                if (this.progress > 80) this.lightOn = false;
+            } else {
+                this.animating = false;
+                this.resistExposed = true;
+                this.updateStatus("> 曝光結束。光阻性質已改變 (潛像形成)");
+                document.getElementById('action-btn').innerText = "完成 (請按下一步)";
+            }
+        } else if (this.step === 3) {
+            // Etching Sequence
+            // Phase 1: Developing (0-30%)
+            // Phase 2: Etching (30-70%)
+            // Phase 3: Stripping (70-100%)
+            this.progress += 0.5;
+
+            if (this.progress < 30) {
+                this.etchPhase = 1;
+                this.updateStatus("> [1/3] 顯影中... 洗去軟化光阻");
+            } else if (this.progress < 70) {
+                this.etchPhase = 2;
+                this.updateStatus("> [2/3] 蝕刻中... 電漿轟擊矽基板");
+                if (this.trenchDepth < 40) this.trenchDepth += 0.5;
+            } else if (this.progress < 100) {
+                this.etchPhase = 3;
+                this.updateStatus("> [3/3] 去光阻... 清除剩餘保護層");
+            } else {
+                this.etchPhase = 4;
+                this.animating = false;
+                this.updateStatus("> 製程結束！電路圖案轉移成功");
+                document.getElementById('action-btn').innerText = "完成";
+            }
+        }
+    },
+
+    draw: function() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        if (this.step === 1) this.drawStep1();
+        else if (this.step === 2) this.drawStep2();
+        else if (this.step === 3) this.drawStep3();
+    },
+
+    // --- Drawing Helpers ---
+
+    drawStep1: function() {
+        const cx = canvas.width / 2;
+        const cy = 350;
+
+        // Crucible (Pot)
+        ctx.fillStyle = "#444";
+        ctx.beginPath();
+        ctx.arc(cx, cy, 150, 0, Math.PI, false);
+        ctx.fill();
+        
+        // Molten Silicon
+        ctx.fillStyle = "#ffaa00"; // Orange glow
+        ctx.shadowBlur = 20;
+        ctx.shadowColor = "orange";
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, 140, 40, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Seed Shaft
+        ctx.fillStyle = "#aaa";
+        ctx.fillRect(cx - 5, 0, 10, cy - this.crystalHeight);
+
+        // The Crystal Ingot
+        ctx.fillStyle = "#333"; // Silicon grey
+        const ingotW = this.crystalWidth;
+        const ingotH = this.crystalHeight;
+        const ingotX = cx - ingotW / 2;
+        const ingotY = cy - ingotH;
+
+        // Draw Ingot (Cylinder-ish)
+        ctx.save();
+        ctx.translate(cx, 0); // Center rotation axis
+        // We simulate rotation visually by drawing lines
+        
+        ctx.fillStyle = "#555";
+        ctx.fillRect(-ingotW/2, cy - ingotH, ingotW, ingotH);
+        
+        // Specular highlights to show roundness
+        ctx.fillStyle = "rgba(255,255,255,0.1)";
+        ctx.fillRect(-ingotW/2 + 10, cy - ingotH, 10, ingotH);
+
+        // Neck (Seed)
+        ctx.fillStyle = "#888";
+        ctx.fillRect(-5, cy - ingotH - 20, 10, 20);
+
+        ctx.restore();
+
+        // Labels
+        this.drawLabel(cx + 160, cy, "坩堝 (Crucible)");
+        this.drawLabel(cx, cy + 20, "1400°C 矽湯 (Melt)");
+        if (this.crystalHeight > 30) {
+            this.drawLabel(cx - 100, cy - this.crystalHeight/2, "矽晶棒 (Ingot)");
+        }
+    },
+
+    drawStep2: function() {
+        const cx = canvas.width / 2;
+        const waferY = 400;
+        
+        // 1. Wafer (Silicon Substrate) - Bottom
+        ctx.fillStyle = "#555";
+        ctx.fillRect(100, waferY, 400, 50);
+        this.drawLabel(520, waferY + 25, "矽晶圓 (Si)");
+
+        // 2. Photoresist (PR) - Middle
+        // If exposed, show latent image
+        if (this.resistExposed) {
+            // Patterned exposure (Positive resist: Exposed becomes soluble/lighter)
+            ctx.fillStyle = "#d63384"; // Unexposed Red
+            ctx.fillRect(100, waferY - 20, 100, 20); // Left block
+            ctx.fillRect(300, waferY - 20, 100, 20); // Center block
+            ctx.fillRect(450, waferY - 20, 50, 20);  // Right block
+
+            ctx.fillStyle = "#e0aaff"; // Exposed Purple (Latent image)
+            ctx.fillRect(200, waferY - 20, 100, 20); // Gap 1
+            ctx.fillRect(400, waferY - 20, 50, 20);  // Gap 2
+        } else {
+            ctx.fillStyle = "#d63384"; // PR Red
+            ctx.fillRect(100, waferY - 20, 400, 20);
+        }
+        this.drawLabel(520, waferY - 10, "光阻劑 (PR)");
+
+        // 3. Mask (Reticle) - Top
+        const maskY = 200;
+        ctx.fillStyle = "black"; // Chrome
+        ctx.fillRect(100, maskY, 100, 10); // Block
+        ctx.fillRect(300, maskY, 100, 10); // Block
+        ctx.fillRect(450, maskY, 50, 10);  // Block
+        
+        ctx.strokeStyle = "#fff"; // Glass/Quartz
+        ctx.strokeRect(100, maskY - 5, 400, 15);
+        this.drawLabel(520, maskY, "光罩 (Mask)");
+
+        // 4. UV Light Source
+        if (this.lightOn) {
+            ctx.fillStyle = "rgba(255, 255, 0, 0.3)"; // Yellow light beam
+            // Beam 1
+            ctx.fillRect(200, 0, 100, waferY - 20);
+            // Beam 2
+            ctx.fillRect(400, 0, 50, waferY - 20);
+
+            ctx.fillStyle = "yellow";
+            this.drawArrow(250, 50, 250, 180);
+            this.drawArrow(425, 50, 425, 180);
+            
+            ctx.font = "bold 20px Arial";
+            ctx.fillText("UV Light", cx - 40, 40);
+        }
+    },
+
+    drawStep3: function() {
+        const cx = canvas.width / 2;
+        const waferY = 350;
+        
+        // Base Silicon
+        ctx.fillStyle = "#555";
+        
+        // Draw Silicon shape based on etching depth
+        // We have holes at x=200 (width 100) and x=400 (width 50)
+        
+        const d = this.trenchDepth; // Etch depth
+
+        ctx.beginPath();
+        ctx.moveTo(100, waferY + 50);
+        ctx.lineTo(500, waferY + 50);
+        ctx.lineTo(500, waferY);
+        
+        // Trench 2 (Right)
+        if (this.etchPhase >= 2) {
+            ctx.lineTo(450, waferY); 
+            ctx.lineTo(450, waferY + d); // Etch down
+            ctx.lineTo(400, waferY + d);
+            ctx.lineTo(400, waferY);
+        } else {
+            ctx.lineTo(400, waferY);
+        }
+
+        // Trench 1 (Left)
+        if (this.etchPhase >= 2) {
+            ctx.lineTo(300, waferY);
+            ctx.lineTo(300, waferY + d); // Etch down
+            ctx.lineTo(200, waferY + d);
+            ctx.lineTo(200, waferY);
+        } else {
+            ctx.lineTo(200, waferY);
+        }
+
+        ctx.lineTo(100, waferY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Labels
+        this.drawLabel(520, waferY + 25, "矽晶圓");
+
+        // Photoresist
+        // Phase 1 (Developing): Exposed parts fade away
+        // Phase 2 (Etching): PR stays to protect
+        // Phase 3 (Stripping): PR fades away
+        
+        let prAlpha = 1;
+        if (this.etchPhase === 3) {
+            // Fading out in phase 3
+            prAlpha = 1 - ((this.progress - 70) / 30);
+            if (prAlpha < 0) prAlpha = 0;
+        }
+
+        if (this.etchPhase < 4) {
+            ctx.fillStyle = `rgba(214, 51, 132, ${prAlpha})`;
+            ctx.fillRect(100, waferY - 20, 100, 20); // Left block
+            ctx.fillRect(300, waferY - 20, 100, 20); // Center block
+            ctx.fillRect(450, waferY - 20, 50, 20);  // Right block
+            
+            // Exposed parts (Only visible in start of phase 1)
+            if (this.etchPhase === 1) {
+                let exposedAlpha = 1 - (this.progress / 30);
+                ctx.fillStyle = `rgba(224, 170, 255, ${exposedAlpha})`;
+                ctx.fillRect(200, waferY - 20, 100, 20);
+                ctx.fillRect(400, waferY - 20, 50, 20);
+            }
+        }
+
+        // Plasma / Etchant effect
+        if (this.etchPhase === 1) {
+            // Shower liquid (Developer)
+            this.drawParticles("cyan");
+            this.drawLabel(cx, 100, "顯影液 (Developer)");
+        } else if (this.etchPhase === 2) {
+            // Plasma bombardment
+            this.drawParticles("#00e5ff");
+            this.drawLabel(cx, 100, "電漿蝕刻 (Plasma)");
+        } else if (this.etchPhase === 3) {
+            // Stripper
+            this.drawParticles("orange");
+            this.drawLabel(cx, 100, "去光阻液 (Stripper)");
+        }
+    },
+
+    drawParticles: function(color) {
+        ctx.fillStyle = color;
+        for(let i=0; i<20; i++) {
+            const x = 100 + Math.random() * 400;
+            const y = Math.random() * 300;
+            ctx.beginPath();
+            ctx.arc(x, y, 3, 0, Math.PI*2);
+            ctx.fill();
+        }
+    },
+
+    drawLabel: function(x, y, text) {
+        ctx.fillStyle = "white";
+        ctx.font = "14px Noto Sans TC";
+        ctx.fillText(text, x, y);
+        // Line connecting label? Optional
+    },
+
+    drawArrow: function(fromx, fromy, tox, toy) {
+        var headlen = 10; // length of head in pixels
+        var dx = tox - fromx;
+        var dy = toy - fromy;
+        var angle = Math.atan2(dy, dx);
+        ctx.beginPath();
+        ctx.moveTo(fromx, fromy);
+        ctx.lineTo(tox, toy);
+        ctx.lineTo(tox - headlen * Math.cos(angle - Math.PI / 6), toy - headlen * Math.sin(angle - Math.PI / 6));
+        ctx.moveTo(tox, toy);
+        ctx.lineTo(tox - headlen * Math.cos(angle + Math.PI / 6), toy - headlen * Math.sin(angle + Math.PI / 6));
+        ctx.strokeStyle = "yellow";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+};
+
+// Start
+app.init();
+
+</script>
+</body>
+</html>
